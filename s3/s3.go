@@ -295,6 +295,31 @@ func (b *Bucket) GetResponse(path string) (resp *http.Response, err error) {
 	return b.GetResponseWithHeaders(path, make(http.Header))
 }
 
+// GetACL returns an ACL of an specified object.
+func (b *Bucket) GetACL(path string) (resp *http.Response, err error) {
+	req := &request{
+		bucket:  b.Name,
+		path:    path,
+		params:  url.Values{"acl": {""}},
+		headers: make(http.Header),
+	}
+	err = b.S3.prepare(req)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := b.S3.AttemptStrategy.Start(); attempt.Next(); {
+		resp, err := b.S3.run(req, nil)
+		if shouldRetry(err) && attempt.HasNext() {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return resp, nil
+	}
+	panic("unreachable")
+}
+
 // GetReaderWithHeaders retrieves an object from an S3 bucket
 // Accepts custom headers to be sent as the second parameter
 // returning the body of the HTTP response.
