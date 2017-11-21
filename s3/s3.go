@@ -137,6 +137,56 @@ func New(auth aws.Auth, region aws.Region, client ...*http.Client) *S3 {
 	return &S3{Auth: auth, Region: region, AttemptStrategy: DefaultAttemptStrategy, httpClient: httpclient}
 }
 
+type ListAllMyBucketsResult struct {
+	XMLName xml.Name                        `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListAllMyBucketsResult"`
+	Buckets []ListAllMyBucketsResult_Bucket `xml:"Buckets>Bucket"`
+}
+
+type ListAllMyBucketsResult_Bucket struct {
+	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ Bucket"`
+	Name    string   `xml:"Name"`
+}
+
+// ListBuckets returns a list of bucket owned by the authenticated sender.
+func (s3 *S3) Buckets() ([]Bucket, error) {
+	req := &request{
+		method: "GET",
+		path:   "/",
+	}
+	if err := s3.prepare(req); err != nil {
+		return nil, err
+	}
+	for attempt := s3.AttemptStrategy.Start(); attempt.Next(); {
+		hresp, err := s3.run(req, nil)
+		if shouldRetry(err) && attempt.HasNext() {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		defer hresp.Body.Close()
+
+		var resp ListAllMyBucketsResult
+		if err := xml.NewDecoder(hresp.Body).Decode(&resp); err != nil {
+			return nil, err
+		}
+
+		buckets := make([]Bucket, len(resp.Buckets))
+		for i, b := range resp.Buckets {
+			name := b.Name
+			if s3.Region.S3BucketEndpoint != "" || s3.Region.S3LowercaseBucket {
+				name = strings.ToLower(name)
+			}
+			buckets[i] = Bucket{
+				S3:   s3,
+				Name: name,
+			}
+		}
+		return buckets, nil
+	}
+	panic("unreachable")
+}
+
 // Bucket returns a Bucket with the given name.
 func (s3 *S3) Bucket(name string) *Bucket {
 	if s3.Region.S3BucketEndpoint != "" || s3.Region.S3LowercaseBucket {
@@ -942,6 +992,8 @@ func (s3 *S3) prepare(req *request) error {
 				req.baseurl = strings.Replace(req.baseurl, "${bucket}", req.bucket, -1)
 			}
 			signpath = "/" + req.bucket + signpath
+		} else {
+			req.baseurl = s3.Region.S3Endpoint
 		}
 	}
 
